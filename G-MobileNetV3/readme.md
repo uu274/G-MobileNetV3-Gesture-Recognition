@@ -1,89 +1,102 @@
+Below is the **updated English README** with **all references to `config.yaml` removed** and the **project structure revised** accordingly.
+
+---
+
 # G-MobileNetV3-Gesture-Recognition
 
-## 项目介绍
+## Project Description
 
-本项目提供了基于G-MobileNetV3网络改进的医生手势识别模型，通过融合Group-Mix Attention（GMA）模块、跨阶段残差连接（Cross-stage Residual Connection）以及PReLU激活函数，提升了模型在复杂手术环境下（如强光干扰、背景复杂性）的手势识别性能。
+This repository contains **G-MobileNetV3**, a lightweight yet robust model for physician gesture recognition in complex surgical environments. The network integrates three key innovations:
 
-本项目代码为论文提供了直接实现方案，使用时请引用本项目相关论文：
+* **Group-Mix Attention (GMA)** – reinforces attention to critical spatial–channel features.
+* **Cross-Stage Residual Connection (CSRC)** – improves feature propagation and gradient flow.
+* **PReLU Activation** – adapts more effectively to diverse gesture patterns under strong illumination or background clutter.
 
-> ** G-MobileNetv3: Physician gesture recognition combined with Group-Mix Attention, submitted to *The Visual Computer*, 2024.**
+For full technical details, please refer to our paper:
 
-## 数据集下载
+> **G-MobileNetV3: Physician Gesture Recognition Combined with Group-Mix Attention**, submitted to *The Visual Computer*, 2025.
 
-本项目使用的数据集已公开，可通过以下Google Drive链接下载：
+## Dataset
 
-* [Surgery-Gesture Dataset](https://drive.google.com/drive/folders/101s5aNbuW0mgAzPqKJ-PqivyTrKvGG63)
+We employ the **Surgery-Gesture Dataset**, specifically collected for gesture recognition in real surgical scenes.
 
-## 项目结构
+Download link:
+
+📂 **[Surgery-Gesture Dataset on Google Drive](https://drive.google.com/drive/folders/101s5aNbuW0mgAzPqKJ-PqivyTrKvGG63)**
+
+## Project Structure
 
 ```
-├── model
-│   └── g_mobilenetv3.py
-├── tool
-│   ├── tool.py
-│   ├── train.py
-│   └── predict.py
-├── requirements.txt
-├── setup.py
-└── config.yaml
+G-MobileNetV3-Gesture-Recognition/
+├── model/
+│   └── G-MobileNetV3.py          # Network architecture
+├── tool/
+│   ├── predict.py                # Inference script
+│   ├── time.py                   # Runtime benchmarking
+│   └── train.py                  # Training script (contains all hyper-parameters)
+├── requirements.txt              # Python dependencies
+├── setup.py                      # Optional: build script if you use Cython
+└── LICENSE
 ```
 
-## 环境配置
+## Environment Setup
 
-推荐使用Python 3.8环境。
-
-安装依赖：
+* **Python 3.8** recommended.
+* Install required packages:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 模型训练
+## Training
 
-在配置文件 `config.yaml` 中设置参数（如数据路径、学习率、批次大小等），然后运行：
+All training hyper-parameters (learning rate, batch size, number of epochs, dataset paths, etc.) are **defined directly inside `tool/train.py`**.
+To start training:
 
 ```bash
 python tool/train.py
 ```
 
-## 模型推理
+If you need to adjust any parameter, simply edit the corresponding variables at the top of `tool/train.py`.
 
-使用训练好的模型进行预测，执行以下命令：
+## Inference
+
+To run gesture recognition on an image with a trained model:
 
 ```bash
 python tool/predict.py --model_path your_model.pth --image_path path_to_image.jpg
 ```
 
-## 模块说明
+## Module Overview
 
-* **Attention模块（attention.py）**: 包含GMA和SIMAM注意力机制。
-* **Cross-stage模块（cross\_stage.py）**: 提供跨阶段残差连接，增强网络初始特征的保留。
-* **主模型（g\_mobilenetv3.py）**: 完整的G-MobileNetV3结构定义。
+* **`G-MobileNetV3.py`** – full network definition, embedding GMA, CSRC, and PReLU.
+* Lightweight **GMA + SIMAM** attention mechanisms enhance feature sensitivity.
+* **Cross-stage residual connections** preserve early-stage features and improve deep-layer fusion.
 
-## 引用方式
+## Citation
 
-如果您使用了本项目的代码或数据，请务必引用本项目的相关论文，以支持我们的研究工作：
+If this project contributes to your research, please cite:
 
 ```bibtex
 @article{wang2024gmobile,
-  title={G-MobileNetv3: Physician gesture recognition combined with Group-Mix Attention},
-  author={Wenjie Wang, Xu Yang, Xiaohua Wang, Huajian Song},
+  title={G-MobileNetV3: Physician Gesture Recognition Combined with Group-Mix Attention},
+  author={Wenjie Wang and Xu Yang and Xiaohua Wang and Huajian Song},
   journal={The Visual Computer},
-  year={2024},
+  year={2024}
 }
 ```
 
 ## License
 
-本项目采用MIT许可证，详见LICENSE文件。
+Released under the **MIT License** (see `LICENSE`).
 
-## 联系我们
+## Contact
 
-如有任何问题，欢迎通过邮箱联系：
-
-* 通讯作者: [wangwenjie@xpu.edu.cn](mailto:wangwenjie@xpu.edu.cn)
+**Corresponding author:** Prof. Wenjie Wang
+📧 [wangwenjie@xpu.edu.cn](mailto:wangwenjie@xpu.edu.cn)
 
 ---
 
-感谢您关注并使用我们的研究成果！
+Let me know if you’d like further tweaks or additional badges/CI instructions!
+
 
