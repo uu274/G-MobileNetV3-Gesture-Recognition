@@ -78,7 +78,7 @@ If this project contributes to your research, please cite:
   title={G-MobileNetV3: Physician Gesture Recognition Combined with Group-Mix Attention},
   author={Wenjie Wang and Xu Yang and Xiaohua Wang and Huajian Song},
   journal={The Visual Computer},
-  year={2024}
+  year={2025}
 }
 ```
 
