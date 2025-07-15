@@ -1,7 +1,3 @@
-Below is the **updated English README** with **all references to `config.yaml` removed** and the **project structure revised** accordingly.
-
----
-
 # G-MobileNetV3-Gesture-Recognition
 
 ## Project Description
@@ -95,8 +91,5 @@ Released under the **MIT License** (see `LICENSE`).
 **Corresponding author:** Prof. Wenjie Wang
 📧 [wangwenjie@xpu.edu.cn](mailto:wangwenjie@xpu.edu.cn)
 
----
-
-Let me know if you’d like further tweaks or additional badges/CI instructions!
 
 
