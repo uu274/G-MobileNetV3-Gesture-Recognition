@@ -8,9 +8,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torchvision import transforms, datasets
 from tqdm import tqdm
-
 #from model_v2 import MobileNetV2
-from cross import mobilenet_v3_large
+from G-MobileNetV3 import GMobileNetV3
 import torchvision.models.mobilenet
 
 def main():
@@ -65,7 +64,7 @@ def main():
                                                                            val_num))
 
     # create model
-    net = mobilenet_v3_large(num_classes=6)
+    net = GMobileNetV3(num_classes=6)
 
     # load pretrain weights
     # download url: https://download.pytorch.org/models/mobilenet_v2-b0353104.pth
