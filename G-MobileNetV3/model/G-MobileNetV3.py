@@ -1,208 +1,321 @@
+from typing import Callable, List, Optional
+# from efficient_attention import EfficientAtt
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from torch import nn, Tensor
+from torch.nn import functional as F
+from functools import partial
+from group_mix_attention import GroupMixAttention
 
-
-class GroupMixAttention(nn.Module):
+def _make_divisible(ch, divisor=8, min_ch=None):
     """
-    Group-Mix Attention as described in G-MobileNetV3 paper.
-    Splits Q,K,V into groups, aggregates some segments, and performs attention.
+    This function is taken from the original tf repo.
+    It ensures that all layers have a channel number that is divisible by 8
+    It can be seen here:
+    https://github.com/tensorflow/models/blob/master/research/slim/nets/mobilenet/mobilenet.py
     """
-    def __init__(self, dim, num_heads=1, group_size=4, aggregator_kernel_sizes=[3,5,7,9]):
-        super().__init__()
-        self.dim = dim
-        self.num_heads = num_heads
-        self.group_size = group_size
-        self.qkv = nn.Linear(dim, dim * 3, bias=False)
-        self.attn_out = nn.Linear(dim, dim)
-        # Define aggregator convs for group proxies
-        self.aggregators = nn.ModuleList([
-            nn.Conv1d(group_size, group_size, k, padding=k//2, groups=group_size, bias=False)
-            for k in aggregator_kernel_sizes
-        ])
-        self.softmax = nn.Softmax(dim=-1)
-
-    def forward(self, x):
-        # x: (B, N, C)
-        B, N, C = x.shape
-        qkv = self.qkv(x)  # (B, N, 3C)
-        q, k, v = torch.chunk(qkv, 3, dim=-1)  # each (B, N, C)
-
-        # Split into groups along the sequence dimension
-        # pad N to multiple of group_size
-        if N % self.group_size != 0:
-            pad = self.group_size - (N % self.group_size)
-            q = F.pad(q, (0,0,0,pad), value=0)
-            k = F.pad(k, (0,0,0,pad), value=0)
-            v = F.pad(v, (0,0,0,pad), value=0)
-        G = q.size(1) // self.group_size
-        # reshape to (B, G, group_size, C)
-        qg = q.view(B, G, self.group_size, C)
-        kg = k.view(B, G, self.group_size, C)
-        vg = v.view(B, G, self.group_size, C)
-
-        # Generate group proxies by aggregating each group segment
-        proxies = []
-        for conv in self.aggregators:
-            # transpose to (B, C, N) then split
-            xg = q.transpose(1,2).view(B, C, G, self.group_size)
-            # merge G into batch to apply conv
-            xg = xg.reshape(B*C*G, self.group_size, 1)
-            agg = conv(xg).view(B, C, G, self.group_size)
-            agg = agg.view(B, C, N + pad if N % self.group_size != 0 else N)
-            proxies.append(agg.transpose(1,2))  # (B, N, C)
-        # concatenate original and proxies
-        q_mix = torch.cat([q] + proxies, dim=-1)
-        k_mix = torch.cat([k] + proxies, dim=-1)
-        v_mix = torch.cat([v] + proxies, dim=-1)
-
-        # Standard attention
-        attn = self.softmax(torch.matmul(q_mix, k_mix.transpose(-2, -1)) / (C**0.5))
-        out = torch.matmul(attn, v_mix)  # (B, N, C_total)
-        # project back to dim
-        out = self.attn_out(out)
-        # truncate to original length
-        out = out[:, :N]
-        return out
+    if min_ch is None:
+        min_ch = divisor
+    new_ch = max(min_ch, int(ch + divisor / 2) // divisor * divisor)
+    # Make sure that round down does not go down by more than 10%.
+    if new_ch < 0.9 * ch:
+        new_ch += divisor
+    return new_ch
 
 
-class CrossStageConnect(nn.Module):
-    """
-    Cross-stage residual connection block: splits channels and fuses after convolution.
-    """
-    def __init__(self, in_channels, out_channels, stride=1):
-        super().__init__()
-        mid = out_channels // 2
-        # convolution path
-        self.conv = nn.Conv2d(in_channels//2, mid, kernel_size=3, stride=stride,
-                              padding=1, bias=False)
-        self.bn = nn.BatchNorm2d(mid)
-        self.act = nn.ReLU(inplace=True)
+class ConvBNActivation(nn.Sequential):
+    def __init__(self,
+                 in_planes: int,
+                 out_planes: int,
+                 kernel_size: int = 3,
+                 stride: int = 1,
+                 groups: int = 1,
+                 norm_layer: Optional[Callable[..., nn.Module]] = None,
+                 activation_layer: Optional[Callable[..., nn.Module]] = None):
+        padding = (kernel_size - 1) // 2
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        if activation_layer is None:
+            activation_layer = nn.ReLU6
+        super(ConvBNActivation, self).__init__(nn.Conv2d(in_channels=in_planes,
+                                                         out_channels=out_planes,
+                                                         kernel_size=kernel_size,
+                                                         stride=stride,
+                                                         padding=padding,
+                                                         groups=groups,
+                                                         bias=False),
+                                               norm_layer(out_planes),
+                                               activation_layer(inplace=True))
 
-    def forward(self, x):
-        # x: (B, C, H, W)
-        c = x.size(1)
-        x1, x2 = torch.split(x, c//2, dim=1)
-        out_conv = self.act(self.bn(self.conv(x1)))
-        # fuse
-        out = torch.cat([out_conv, x2], dim=1)
-        return out
+
+class SqueezeExcitation(nn.Module):
+    def __init__(self, input_c: int, squeeze_factor: int = 4):
+        super(SqueezeExcitation, self).__init__()
+        squeeze_c = _make_divisible(input_c // squeeze_factor, 8)
+        self.fc1 = nn.Conv2d(input_c, squeeze_c, 1)
+        self.fc2 = nn.Conv2d(squeeze_c, input_c, 1)
+
+    def forward(self, x: Tensor) -> Tensor:
+        scale = F.adaptive_avg_pool2d(x, output_size=(1, 1))
+        scale = self.fc1(scale)
+        scale = F.relu(scale, inplace=True)
+        scale = self.fc2(scale)
+        scale = F.hardsigmoid(scale, inplace=True)
+        return scale * x
 
 
-class BottleneckGMA(nn.Module):
-    """
-    Linear bottleneck with GroupMixAttention and optional PReLU.
-    """
-    def __init__(self, in_channels, out_channels, stride, expansion, use_se, act_layer, gma=False):
-        super().__init__()
-        hidden_dim = in_channels * expansion
-        self.use_res_connect = (stride == 1 and in_channels == out_channels)
-        layers = []
-        # expand
-        if expansion != 1:
-            layers.append(nn.Conv2d(in_channels, hidden_dim, kernel_size=1, bias=False))
-            layers.append(nn.BatchNorm2d(hidden_dim))
-            layers.append(act_layer())
-        # depthwise
-        layers.append(nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, stride=stride,
-                                 padding=1, groups=hidden_dim, bias=False))
-        layers.append(nn.BatchNorm2d(hidden_dim))
-        layers.append(act_layer())
-        if use_se:
-            # SE
-            se = nn.Sequential(
-                nn.AdaptiveAvgPool2d(1),
-                nn.Conv2d(hidden_dim, hidden_dim//4, kernel_size=1),
-                act_layer(),
-                nn.Conv2d(hidden_dim//4, hidden_dim, kernel_size=1),
-                nn.Sigmoid())
-            layers.append(se)
-        # project
-        layers.append(nn.Conv2d(hidden_dim, out_channels, kernel_size=1, bias=False))
-        layers.append(nn.BatchNorm2d(out_channels))
-        self.conv = nn.Sequential(*layers)
-        # optional GMA on feature map
-        self.gma = GroupMixAttention(dim=out_channels) if gma else None
+class InvertedResidualConfig:
+    def __init__(self,
+                 input_c: int,
+                 kernel: int,
+                 expanded_c: int,
+                 out_c: int,
+                 use_se: bool,
+                 activation: str,
+                 stride: int,
+                 width_multi: float):
+        self.input_c = InvertedResidualConfig.adjust_channels(input_c, width_multi)
+        self.kernel = kernel
+        self.expanded_c = InvertedResidualConfig.adjust_channels(expanded_c, width_multi)
+        self.out_c = InvertedResidualConfig.adjust_channels(out_c, width_multi)
+        self.use_se = use_se
+        self.use_hs = activation == "HS"  # whether using h-swish activation
+        self.stride = stride
 
-    def forward(self, x):
-        out = self.conv(x)
-        if self.gma is not None:
-            B, C, H, W = out.shape
-            # flatten spatial
-            feat = out.view(B, C, H*W).transpose(1,2)  # (B, N, C)
-            feat = self.gma(feat)
-            out = feat.transpose(1,2).view(B, C, H, W)
+
+
+    def adjust_channels(channels: int, width_multi: float):
+        return _make_divisible(channels * width_multi, 8)
+
+
+class InvertedResidual(nn.Module):
+    def __init__(self,
+                 cnf: InvertedResidualConfig,
+                 norm_layer: Callable[..., nn.Module]):
+        super(InvertedResidual, self).__init__()
+
+        if cnf.stride not in [1, 2]:
+            raise ValueError("illegal stride value.")
+
+        self.use_res_connect = (cnf.stride == 1 and cnf.input_c == cnf.out_c)
+        # 跨层连接
         if self.use_res_connect:
-            return x + out
-        return out
+            self.res_connect = nn.Conv2d(cnf.input_c, cnf.out_c, kernel_size=1, stride=1, bias=False)
+
+        layers: List[nn.Module] = []
+        activation_layer = nn.Hardswish if cnf.use_hs else nn.ReLU
+
+        # # 添加一个跳跃连接用于保留初始特征
+        # self.identity_layer = nn.Identity()
+
+        # expand
+        if cnf.expanded_c != cnf.input_c:
+            layers.append(ConvBNActivation(cnf.input_c,
+                                           cnf.expanded_c,
+                                           kernel_size=1,
+                                           norm_layer=norm_layer,
+                                           activation_layer=activation_layer))
+
+        # depthwise
+        layers.append(ConvBNActivation(cnf.expanded_c,
+                                       cnf.expanded_c,
+                                       kernel_size=cnf.kernel,
+                                       stride=cnf.stride,
+                                       groups=cnf.expanded_c,
+                                       norm_layer=norm_layer,
+                                       activation_layer=activation_layer))
+
+        if cnf.use_se:
+            layers.append(SqueezeExcitation(cnf.expanded_c))
+
+        # project
+        layers.append(ConvBNActivation(cnf.expanded_c,
+                                       cnf.out_c,
+                                       kernel_size=1,
+                                       norm_layer=norm_layer,
+                                       activation_layer=nn.Identity))
+
+        self.block = nn.Sequential(*layers)
+        self.out_channels = cnf.out_c
+        self.is_strided = cnf.stride > 1
+
+    def forward(self, x: Tensor) -> Tensor:
+        result = self.block(x)
+
+        # 添加跨层连接
+        if self.use_res_connect:
+            x = self.res_connect(x)
+
+        if self.use_res_connect:
+            result += x
+
+        return result
 
 
-class GMobileNetV3(nn.Module):
-    """
-    G-MobileNetV3: MobileNetV3 backbone with GMA, CSC, and PReLU modifications.
-    """
-    def __init__(self, num_classes=6, width_mult=1.0):
-        super().__init__()
-        # setting of layers: t, c, n, s, se, nl, gma
-        # from Table1 in paper
-        self.cfg = [
-            # t, c, n, s, se, nl, gma
-            [1,  16, 1, 2, False, nn.Hardswish, False],
-            [4,  24, 2, 2, False, nn.ReLU,      False],
-            [3,  24, 2, 1, False, nn.ReLU,      False],
-            [3,  40, 3, 2, True,  nn.Hardswish, False],
-            [3,  40, 3, 1, True,  nn.Hardswish, False],
-            [6,  80, 4, 2, False, nn.Hardswish, True ],  # add GMA
-            [6,  112,2, 1, True,  nn.Hardswish, True ],
-            [6,  160,2, 2, True,  nn.Hardswish, True ],
-        ]
-        input_channel = int(16 * width_mult)
-        layers = []
-        # initial conv
-        layers.append(nn.Conv2d(3, input_channel, kernel_size=3, stride=2, padding=1, bias=False))
-        layers.append(nn.BatchNorm2d(input_channel))
-        layers.append(nn.Hardswish())
-        # bottlenecks
-        for t, c, n, s, se, nl, gma in self.cfg:
-            output_channel = int(c * width_mult)
-            for i in range(n):
-                stride = s if i == 0 else 1
-                layers.append(
-                    BottleneckGMA(
-                        in_channels=input_channel,
-                        out_channels=output_channel,
-                        stride=stride,
-                        expansion=t,
-                        use_se=se,
-                        act_layer=nl,
-                        gma=gma
-                    )
-                )
-                input_channel = output_channel
-        # final layers
-        last_channel = int(960 * width_mult)
-        layers.append(nn.Conv2d(input_channel, last_channel, kernel_size=1, bias=False))
-        layers.append(nn.BatchNorm2d(last_channel))
-        layers.append(nn.Hardswish())
-        layers.append(nn.AdaptiveAvgPool2d(1))
-        layers.append(nn.Conv2d(last_channel, 1024, kernel_size=1))
-        layers.append(nn.Hardswish())
+class MobileNetV3(nn.Module):
+    def __init__(self,
+                 inverted_residual_setting: List[InvertedResidualConfig],
+                 last_channel: int,
+                 num_classes: int = 1000,
+                 block: Optional[Callable[..., nn.Module]] = None,
+                 norm_layer: Optional[Callable[..., nn.Module]] = None):
+        super(MobileNetV3, self).__init__()
+
+        if not inverted_residual_setting:
+            raise ValueError("The inverted_residual_setting should not be empty.")
+        elif not (isinstance(inverted_residual_setting, List) and
+                  all([isinstance(s, InvertedResidualConfig) for s in inverted_residual_setting])):
+            raise TypeError("The inverted_residual_setting should be List[InvertedResidualConfig]")
+
+        if block is None:
+            block = InvertedResidual
+
+        if norm_layer is None:
+            norm_layer = partial(nn.BatchNorm2d, eps=0.001, momentum=0.01)
+
+        layers: List[nn.Module] = []
+
+        # building first layer
+        firstconv_output_c = inverted_residual_setting[0].input_c
+        layers.append(ConvBNActivation(3,
+                                       firstconv_output_c,
+                                       kernel_size=3,
+                                       stride=2,
+                                       norm_layer=norm_layer,
+                                       activation_layer=nn.Hardswish))
+        # building inverted residual blocks
+        for cnf in inverted_residual_setting:
+            layers.append(block(cnf, norm_layer))
+
+        # building last several layers
+        lastconv_input_c = inverted_residual_setting[-1].out_c
+        lastconv_output_c = 6 * lastconv_input_c
+        layers.append(ConvBNActivation(lastconv_input_c,
+                                       lastconv_output_c,
+                                       kernel_size=1,
+                                       norm_layer=norm_layer,
+                                       activation_layer=nn.Hardswish))
         self.features = nn.Sequential(*layers)
-        # classifier
-        self.classifier = nn.Sequential(
-            nn.Linear(1024, num_classes)
-        )
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Sequential(nn.Linear(lastconv_output_c, last_channel),
+                                        nn.Hardswish(inplace=True),
+                                        nn.Dropout(p=0.2, inplace=True),
+                                        nn.Linear(last_channel, num_classes))
 
-    def forward(self, x):
+        # initial weights
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.zeros_(m.bias)
+
+        # self.attention_module = EfficientAtt(dim=256, num_heads=4)
+        self.attention = GroupMixAttention(dim=64, num_groups=4)
+
+    def _forward_impl(self, x: Tensor) -> Tensor:
         x = self.features(x)
-        x = x.flatten(1)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
         x = self.classifier(x)
+
         return x
 
 
-if __name__ == "__main__":
-    # test
-    model = GMobileNetV3(num_classes=6)
-    inp = torch.randn(1,3,224,224)
-    out = model(inp)
-    print(out.shape)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self._forward_impl(x)
+
+
+def mobilenet_v3_large(num_classes: int = 1000,
+                       reduced_tail: bool = False) -> MobileNetV3:
+    """
+    Constructs a large MobileNetV3 architecture from
+    "Searching for MobileNetV3" <https://arxiv.org/abs/1905.02244>.
+
+    weights_link:
+    https://download.pytorch.org/models/mobilenet_v3_large-8738ca79.pth
+
+    Args:
+        num_classes (int): number of classes
+        reduced_tail (bool): If True, reduces the channel counts of all feature layers
+            between C4 and C5 by 2. It is used to reduce the channel redundancy in the
+            backbone for Detection and Segmentation.
+    """
+    width_multi = 1.0
+    bneck_conf = partial(InvertedResidualConfig, width_multi=width_multi)
+    adjust_channels = partial(InvertedResidualConfig.adjust_channels, width_multi=width_multi)
+
+    reduce_divider = 2 if reduced_tail else 1
+
+    inverted_residual_setting = [
+        # input_c, kernel, expanded_c, out_c, use_se, activation, stride
+        bneck_conf(16, 3, 16, 16, False, "RE", 1),
+        bneck_conf(16, 3, 64, 24, False, "RE", 2),  # C1
+        bneck_conf(24, 3, 72, 24, False, "RE", 1),
+        bneck_conf(24, 5, 72, 40, True, "RE", 2),  # C2
+        bneck_conf(40, 5, 120, 40, True, "RE", 1),
+        bneck_conf(40, 5, 120, 40, True, "RE", 1),
+        bneck_conf(40, 3, 240, 80, False, "HS", 2),  # C3
+        bneck_conf(80, 3, 200, 80, False, "HS", 1),
+        bneck_conf(80, 3, 184, 80, False, "HS", 1),
+        bneck_conf(80, 3, 184, 80, False, "HS", 1),
+        bneck_conf(80, 3, 480, 112, True, "HS", 1),
+        bneck_conf(112, 3, 672, 112, True, "HS", 1),
+        bneck_conf(112, 5, 672, 160 // reduce_divider, True, "HS", 2),  # C4
+        bneck_conf(160 // reduce_divider, 5, 960 // reduce_divider, 160 // reduce_divider, True, "HS", 1),
+        bneck_conf(160 // reduce_divider, 5, 960 // reduce_divider, 160 // reduce_divider, True, "HS", 1),
+    ]
+    last_channel = adjust_channels(1280 // reduce_divider)  # C5
+
+    return MobileNetV3(inverted_residual_setting=inverted_residual_setting,
+                       last_channel=last_channel,
+                       num_classes=num_classes)
+
+
+def mobilenet_v3_small(num_classes: int = 1000,
+                       reduced_tail: bool = False) -> MobileNetV3:
+    """
+    Constructs a large MobileNetV3 architecture from
+    "Searching for MobileNetV3" <https://arxiv.org/abs/1905.02244>.
+
+    weights_link:
+    https://download.pytorch.org/models/mobilenet_v3_small-047dcff4.pth
+
+    Args:
+        num_classes (int): number of classes
+        reduced_tail (bool): If True, reduces the channel counts of all feature layers
+            between C4 and C5 by 2. It is used to reduce the channel redundancy in the
+            backbone for Detection and Segmentation.
+    """
+    width_multi = 1.0
+    bneck_conf = partial(InvertedResidualConfig, width_multi=width_multi)
+    adjust_channels = partial(InvertedResidualConfig.adjust_channels, width_multi=width_multi)
+
+    reduce_divider = 2 if reduced_tail else 1
+
+    inverted_residual_setting = [
+        # input_c, kernel, expanded_c, out_c, use_se, activation, stride
+        bneck_conf(16, 3, 16, 16, True, "RE", 2),  # C1
+        bneck_conf(16, 3, 72, 24, False, "RE", 2),  # C2
+        bneck_conf(24, 3, 88, 24, False, "RE", 1),
+        bneck_conf(24, 5, 96, 40, True, "HS", 2),  # C3
+        bneck_conf(40, 5, 240, 40, True, "HS", 1),
+        bneck_conf(40, 5, 240, 40, True, "HS", 1),
+        bneck_conf(40, 5, 120, 48, True, "HS", 1),
+        bneck_conf(48, 5, 144, 48, True, "HS", 1),
+        bneck_conf(48, 5, 288, 96 // reduce_divider, True, "HS", 2),  # C4
+        bneck_conf(96 // reduce_divider, 5, 576 // reduce_divider, 96 // reduce_divider, True, "HS", 1),
+        bneck_conf(96 // reduce_divider, 5, 576 // reduce_divider, 96 // reduce_divider, True, "HS", 1)
+    ]
+    last_channel = adjust_channels(1024 // reduce_divider)  # C5
+
+    return MobileNetV3(inverted_residual_setting=inverted_residual_setting,
+                       last_channel=last_channel,
+                       num_classes=num_classes)
+model = mobilenet_v3_small()
+print(model)
