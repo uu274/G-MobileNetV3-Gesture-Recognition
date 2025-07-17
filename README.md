@@ -1,4 +1,4 @@
-# G-MobileNetV3: Physician Gesture Recognition Combined with Group-Mix Attention  
+# Enhanced Physician Gesture Recognition via G-MobileNetv3 with Group-Mix Attention Mechanism
 **Published in The Visual Computer**
 
 ## 🔍 Project Overview  
