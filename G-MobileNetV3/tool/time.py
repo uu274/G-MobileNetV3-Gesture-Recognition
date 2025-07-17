@@ -2,7 +2,7 @@
 
 import torch
 from torchsummary import summary
-from model_v3 import mobilenet_v3_large  # Replace with the actual module where your model is defined
+from G-MobileNetV3 import mobilenet_v3_large  # Replace with the actual module where your model is defined
 
 # Initialize the model
 model = mobilenet_v3_large(num_classes=1000)
