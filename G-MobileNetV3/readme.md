@@ -26,6 +26,7 @@ Download link:
 G-MobileNetV3-Gesture-Recognition/
 ├── model/
 │   └── G-MobileNetV3.py          # Network architecture
+│   └── group_mix_attention.py    # Group-Mix Attention 
 ├── tool/
 │   ├── predict.py                # Inference script
 │   ├── time.py                   # Runtime benchmarking
@@ -66,7 +67,7 @@ python tool/predict.py --model_path your_model.pth --image_path path_to_image.jp
 ## Module Overview
 
 * **`G-MobileNetV3.py`** – full network definition, embedding GMA, CSRC, and PReLU.
-* Lightweight **GMA + SIMAM** attention mechanisms enhance feature sensitivity.
+* Lightweight **GMA ** attention mechanisms enhance feature sensitivity.
 * **Cross-stage residual connections** preserve early-stage features and improve deep-layer fusion.
 
 ## Citation
@@ -74,7 +75,7 @@ python tool/predict.py --model_path your_model.pth --image_path path_to_image.jp
 If this project contributes to your research, please cite:
 
 ```bibtex
-@article{wang2024gmobile,
+@article{wang2025gmobile,
   title={G-MobileNetV3: Physician Gesture Recognition Combined with Group-Mix Attention},
   author={Wenjie Wang and Xu Yang and Xiaohua Wang and Huajian Song},
   journal={The Visual Computer},
