@@ -10,7 +10,7 @@ This repository contains **G-MobileNetV3**, a lightweight yet robust model for p
 
 For full technical details, please refer to our paper:
 
-> **G-MobileNetV3: Physician Gesture Recognition Combined with Group-Mix Attention**, submitted to *The Visual Computer*, 2025.
+> **Enhanced Physician Gesture Recognition via G-MobileNetv3 with Group-Mix Attention Mechanism**, submitted to *The Visual Computer*, 2025.
 
 ## Dataset
 
