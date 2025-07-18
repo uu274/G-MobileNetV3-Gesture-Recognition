@@ -89,8 +89,8 @@ Released under the **MIT License** (see `LICENSE`).
 
 ## Contact
 
-**Corresponding author:** Prof. Wenjie Wang
-📧 [wangwenjie@xpu.edu.cn](mailto:wangwenjie@xpu.edu.cn)
+**Corresponding author:** Prof. Huajian Song
+📧 [songhuajian01@163.com](mailto:songhuajian01@163.com)
 
 
 
