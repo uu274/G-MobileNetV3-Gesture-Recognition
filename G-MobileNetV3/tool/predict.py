@@ -4,7 +4,7 @@ import torch
 from PIL import Image
 from torchvision import transforms
 import matplotlib.pyplot as plt
-from G-MobileNetV3 import mobilenet_v3_large
+from model.G_MobileNetV3 import mobilenet_v3_large
 
 def main():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
