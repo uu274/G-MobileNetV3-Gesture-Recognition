@@ -1,5 +1,8 @@
 from typing import Callable, List, Optional
 # from efficient_attention import EfficientAtt
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'model')))
 import torch
 from torch import nn, Tensor
 from torch.nn import functional as F
