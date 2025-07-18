@@ -1,15 +1,15 @@
 import os
 import sys
 import json
-import os
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import transforms, datasets
 from tqdm import tqdm
 #from model_v2 import MobileNetV2
-from G-MobileNetV3 import mobilenet_v3_large
+from model.G_MobileNetV3 import mobilenet_v3_large
 import torchvision.models.mobilenet
 
 def main():
